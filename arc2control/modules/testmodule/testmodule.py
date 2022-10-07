@@ -52,7 +52,9 @@ class TestModuleOperation(BaseOperation):
             ## try to pulse and read simultaneously
             #current = self.arc.pulseread_slice(16, 1, 1, 0)
             
-           
+            #read_slice allows to read the whole wordline simultaneously, given the channel 
+            #and the read voltage -> read_slice(self, chan, vread)
+            #THE CHANNEL IS THE BOARD CHANNEL, PAY ATTENTION TO MAPPING -> in this case channel 13 is Bitline 1
             current= self.arc.read_slice(13,1)
             # communicate the new value to the UI
             self.newValue.emit(current)
