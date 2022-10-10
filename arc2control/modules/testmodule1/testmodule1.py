@@ -12,9 +12,11 @@ from arc2control.h5utils import OpType
 from arc2control.widgets.duration_widget import DurationWidget
 
 from PyQt6 import QtCore, QtWidgets, QtGui
+
+# pyqtSignal was missing from factory code -> Error: missing operationFinished signal
 from PyQt6.QtCore import pyqtSignal
 
-
+# dataset data type definition. tstamp is divided in seconds and microseconds
 _RET_DTYPE = [('read_voltage', '<f4'), ('current', '<f4'), ('tstamp_s', '<u8'), ('tstamp_us', '<u8')]
 
 _MAX_REFRESHES_PER_SECOND = 5
@@ -23,6 +25,8 @@ _MIN_INTERVAL_USEC = 1000000//_MAX_REFRESHES_PER_SECOND # note! integer division
 
 class RetentionOperation(BaseOperation):
     newValue = pyqtSignal(np.ndarray)
+    
+    #not present in factory code. Here parent inheritablity was failing(?) so I redefined operationFinished signal
     operationFinished = QtCore.pyqtSignal()
 
     def __init__(self, params, parent):
@@ -52,20 +56,41 @@ class RetentionOperation(BaseOperation):
         vread_start = 0
 
         # allocate data tables and do initial read
+        
+        #defining a mask to read wordline 1, 2, 3 of the experiment.
+        #dtype must be uint64, not uint32 as explained in the .rs library.
         mask = np.array([16, 17, 18], dtype= np.uint64)
+        
+        #using read_slice_masked i can read all the masked channels that share a high channel -> all the masked wordlines that share a bitline
+        #storing the sample in a vector. currentSample= (current_mask1, current_mask2, current_mask3, NaN, Nan, ..., Nan).
         currentSample= self.arc.read_slice_masked(13, mask, vread)
+        
+        #defining sample time which is unique for all three samples.
+        sampleTime = self.parseTimestamp(time.time())
+        
+        #Debug check
         print('CURRENT SAMPLE IS:')
         print(currentSample)
-        sampleTime = self.parseTimestamp(time.time())
+        
+        #FIRST ITERATION CYCLE
+        #changed 'for' cycle in 'enumerate' cycle so that I can use the iteration (idx) number in currentSample vector
         for idx, cell in enumerate(self.cells):
             self.cellData[cell] = np.empty(shape=(iterations+1, ), dtype=_RET_DTYPE)
             self.cellDataLookBack[cell] = 0
+            #storing vread, corresponding current sample, and sample time in each data cell
             self.cellData[cell][0] = (vread_start, currentSample[idx], \
                 *sampleTime)
+            
+            #initializing a variable ispulse so that i can alternate between vread=vread and vread=0. 
+            #if ispulse is true then vread is high, is ispulse is false, then vread is 0
             ispulse = False
 
         for step in range(1, iterations+1):
+            
+            #alternating high and low vread
             ispulse=not ispulse
+            
+            #assigning vread value to vread_cycle following the pulse
             if not ispulse:
                 vread_cycle=0
             else:
@@ -77,9 +102,6 @@ class RetentionOperation(BaseOperation):
             sampleTime = self.parseTimestamp(time.time())
             for idx, cell in enumerate(self.cells):
                 start = time.time()
-                #current = self.readDevice(cell, vread)
-                delta = time.time() - start
-                #stamp = self.parseTimestamp(start, step*delta)
                 self.cellData[cell][step] = (vread_cycle, currentSample[idx], *sampleTime)
                 self.conditionalRefresh(cell, step, (vread_cycle, currentSample[idx], *sampleTime))
 
@@ -91,7 +113,8 @@ class RetentionOperation(BaseOperation):
         seconds = int(seconds)
 
         return (seconds, microseconds)
-
+        
+        #readDevice function has been replaced by direct method of current measurement
     def readDevice(self, cell, vread):
         (w, b) = (cell.w, cell.b)
         (high, low) = self.mapper.wb2ch[w][b]
@@ -239,11 +262,17 @@ class Retention(BaseModule):
         self.applyButton.setEnabled((len(self.cells) > 0) and \
             (self.arc is not None))
 
+       
+    # !!! !!! HERE THE OPERATION IS CALLED AT BUTTON CLICK !!! !!!        
+    
     def applyButtonClicked(self):
         self._thread = RetentionOperation(self.__retentionParams(), self)
+        
+        # When the operation is finished, the signal 'operationFinished' calls the '__threadFinished method'
         self._thread.operationFinished.connect(self.__threadFinished)
         self._thread.start()
-
+    
+    # !!! !!! HERE THE OPERATION DATA IS COLLECTED AND STORED IN DATASTORE !!! !!!
     def __threadFinished(self):
         self._thread.wait()
         self._thread.setParent(None)
