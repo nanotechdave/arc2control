@@ -54,6 +54,11 @@ class RetentionOperation(BaseOperation):
 
         iterations = math.ceil(readfor/readevery)
         vread_start = 0
+        
+        #initial configuration of the channels 
+        #!!!-- LINE 61 COMMENTED SINCE IT DOES NOT WORK --- !!!
+        
+        #self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, 0)], 0)
 
         # allocate data tables and do initial read
         
