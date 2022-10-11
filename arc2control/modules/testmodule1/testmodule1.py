@@ -12,11 +12,9 @@ from arc2control.h5utils import OpType
 from arc2control.widgets.duration_widget import DurationWidget
 
 from PyQt6 import QtCore, QtWidgets, QtGui
-
-# pyqtSignal was missing from factory code -> Error: missing operationFinished signal
 from PyQt6.QtCore import pyqtSignal
 
-# dataset data type definition. tstamp is divided in seconds and microseconds
+
 _RET_DTYPE = [('read_voltage', '<f4'), ('current', '<f4'), ('tstamp_s', '<u8'), ('tstamp_us', '<u8')]
 
 _MAX_REFRESHES_PER_SECOND = 5
@@ -25,8 +23,6 @@ _MIN_INTERVAL_USEC = 1000000//_MAX_REFRESHES_PER_SECOND # note! integer division
 
 class RetentionOperation(BaseOperation):
     newValue = pyqtSignal(np.ndarray)
-    
-    #not present in factory code. Here parent inheritablity was failing(?) so I redefined operationFinished signal
     operationFinished = QtCore.pyqtSignal()
 
     def __init__(self, params, parent):
@@ -37,7 +33,7 @@ class RetentionOperation(BaseOperation):
         self._currents = []
         self.cellData = {}
 
-        (_, readevery, _) = self.params
+        (_, readevery, hightime, lowtime, _) = self.params
         # check if we need to ease up on refreshing the display
         self._immediateUpdates = readevery*1000000 > _MIN_INTERVAL_USEC
         # in that case, find out how many points should we
@@ -50,63 +46,48 @@ class RetentionOperation(BaseOperation):
         self.cellDataLookBack = {}
 
     def run(self):
-        (readfor, readevery, vread) = self.params
+        (readfor, readevery, hightime, lowtime, vread) = self.params
 
         iterations = math.ceil(readfor/readevery)
         vread_start = 0
+        #try to set channels at a determined voltage
+        #self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, 1)], 0)
+        #self.arc.ground_all()
         
-        #initial configuration of the channels 
-        #!!!-- LINE 61 COMMENTED SINCE IT DOES NOT WORK --- !!!
-        
-        #self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, 0)], 0)
-
         # allocate data tables and do initial read
-        
-        #defining a mask to read wordline 1, 2, 3 of the experiment.
-        #dtype must be uint64, not uint32 as explained in the .rs library.
         mask = np.array([16, 17, 18], dtype= np.uint64)
         
-        #using read_slice_masked i can read all the masked channels that share a high channel -> all the masked wordlines that share a bitline
-        #storing the sample in a vector. currentSample= (current_mask1, current_mask2, current_mask3, NaN, Nan, ..., Nan).
-        currentSample= self.arc.read_slice_masked(13, mask, vread)
-        
-        #defining sample time which is unique for all three samples.
-        sampleTime = self.parseTimestamp(time.time())
-        
-        #Debug check
+        #making sure channel 16, 17, 18 are connected to gnd
+        self.arc.connect_to_gnd(mask)
+        currentSample= self.arc.read_slice_masked(13, mask, vread_start)
         print('CURRENT SAMPLE IS:')
         print(currentSample)
-        
-        #FIRST ITERATION CYCLE
-        #changed 'for' cycle in 'enumerate' cycle so that I can use the iteration (idx) number in currentSample vector
+        sampleTime = self.parseTimestamp(time.time())
         for idx, cell in enumerate(self.cells):
             self.cellData[cell] = np.empty(shape=(iterations+1, ), dtype=_RET_DTYPE)
             self.cellDataLookBack[cell] = 0
-            #storing vread, corresponding current sample, and sample time in each data cell
             self.cellData[cell][0] = (vread_start, currentSample[idx], \
                 *sampleTime)
-            
-            #initializing a variable ispulse so that i can alternate between vread=vread and vread=0. 
-            #if ispulse is true then vread is high, is ispulse is false, then vread is 0
             ispulse = False
 
         for step in range(1, iterations+1):
-            
-            #alternating high and low vread
             ispulse=not ispulse
-            
-            #assigning vread value to vread_cycle following the pulse
             if not ispulse:
                 vread_cycle=0
+                time.sleep(lowtime)
             else:
                 vread_cycle = vread
+                time.sleep(hightime)
             
             
-            time.sleep(readevery)
+           
             currentSample = self.arc.read_slice_masked(13, mask, vread_cycle)
             sampleTime = self.parseTimestamp(time.time())
             for idx, cell in enumerate(self.cells):
                 start = time.time()
+                #current = self.readDevice(cell, vread)
+                delta = time.time() - start
+                #stamp = self.parseTimestamp(start, step*delta)
                 self.cellData[cell][step] = (vread_cycle, currentSample[idx], *sampleTime)
                 self.conditionalRefresh(cell, step, (vread_cycle, currentSample[idx], *sampleTime))
 
@@ -118,8 +99,7 @@ class RetentionOperation(BaseOperation):
         seconds = int(seconds)
 
         return (seconds, microseconds)
-        
-        #readDevice function has been replaced by direct method of current measurement
+
     def readDevice(self, cell, vread):
         (w, b) = (cell.w, cell.b)
         (high, low) = self.mapper.wb2ch[w][b]
@@ -134,7 +114,7 @@ class RetentionOperation(BaseOperation):
 
     def conditionalRefresh(self, cell, step, result):
 
-        (_, readevery, _) = self.params
+        (_, readevery, hightime, lowtime, _) = self.params
         (w, b) = (cell.w, cell.b)
 
         (vread, current, seconds, microseconds) = result
@@ -184,17 +164,17 @@ class Retention(BaseModule):
             ('ms', 1e-3), ('s', 1.0), ('min', 60.0)])
         self.readEveryDurationWidget.setDuration(1, 's')
         
-        # self.hightimeDurationWidget = DurationWidget()
-        # self.hightimeDurationWidget.setObjectName('hightimeDurationWidget')
-        # self.hightimeDurationWidget.setDurations([\
-        #      ('us', 1e-6), ('ms', 1e-3), ('s', 1.0), ('min', 60.0)])
-        # self.hightimeDurationWidget.setDuration(1, 's')
+        self.hightimeDurationWidget = DurationWidget()
+        self.hightimeDurationWidget.setObjectName('hightimeDurationWidget')
+        self.hightimeDurationWidget.setDurations([\
+              ('us', 1e-6), ('ms', 1e-3), ('s', 1.0), ('min', 60.0)])
+        self.hightimeDurationWidget.setDuration(1, 's')
         
-        # self.lowtimeDurationWidget = DurationWidget()
-        # self.lowtimeDurationWidget.setObjectName('lowtimeDurationWidget')
-        # self.lowtimeDurationWidget.setDurations([\
-        #     ('us', 1e-6), ('ms', 1e-3), ('s', 1.0), ('min', 60.0)])
-        # self.lowtimeDurationWidget.setDuration(1, 's')
+        self.lowtimeDurationWidget = DurationWidget()
+        self.lowtimeDurationWidget.setObjectName('lowtimeDurationWidget')
+        self.lowtimeDurationWidget.setDurations([\
+            ('us', 1e-6), ('ms', 1e-3), ('s', 1.0), ('min', 60.0)])
+        self.lowtimeDurationWidget.setDuration(1, 's')
 
         self.readForDurationWidget = DurationWidget()
         self.readForDurationWidget.setObjectName('readForDurationWidget')
@@ -221,16 +201,27 @@ class Retention(BaseModule):
         layout.addWidget(QtWidgets.QLabel("Read every"), 0, 0)
         layout.addWidget(QtWidgets.QLabel("Read for"), 1, 0)
         layout.addWidget(QtWidgets.QLabel("Read at"), 2, 0)
+        
+        #start of mycode
+        layout.addWidget(QtWidgets.QLabel("hightime"), 3, 0)
+        layout.addWidget(QtWidgets.QLabel("lowtime"), 4, 0)        
+        
         layout.addWidget(self.readEveryDurationWidget, 0, 1)
         layout.addWidget(self.readForDurationWidget, 1, 1)
         layout.addWidget(self.readVoltageSpinBox, 2, 1)
-        layout.addWidget(self.lockReadoutVoltageCheckBox, 3, 0, 1, 2)
+        
+        #start of my code
+        layout.addWidget(self.hightimeDurationWidget, 3, 1)
+        layout.addWidget(self.lowtimeDurationWidget, 4, 1)
+        
+        
+        layout.addWidget(self.lockReadoutVoltageCheckBox, 5, 0, 1, 2)
         layout.addItem(QtWidgets.QSpacerItem(20, 20, \
             QtWidgets.QSizePolicy.Policy.Fixed, \
-            QtWidgets.QSizePolicy.Policy.Expanding), 4, 0)
+            QtWidgets.QSizePolicy.Policy.Expanding), 5, 0)
         layout.addItem(QtWidgets.QSpacerItem(20, 20, \
             QtWidgets.QSizePolicy.Policy.Expanding, \
-            QtWidgets.QSizePolicy.Policy.Fixed), 4, 2)
+            QtWidgets.QSizePolicy.Policy.Fixed), 5, 2)
         layout.setColumnStretch(0, 0)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(2, 2)
@@ -247,7 +238,7 @@ class Retention(BaseModule):
         buttonLayout.addItem(QtWidgets.QSpacerItem(20, 20, \
             QtWidgets.QSizePolicy.Policy.Expanding))
 
-        layout.addLayout(buttonLayout, 5, 0, 1, 3)
+        layout.addLayout(buttonLayout, 6, 0, 1, 3)
 
         self.setLayout(layout)
 
@@ -267,21 +258,15 @@ class Retention(BaseModule):
         self.applyButton.setEnabled((len(self.cells) > 0) and \
             (self.arc is not None))
 
-       
-    # !!! !!! HERE THE OPERATION IS CALLED AT BUTTON CLICK !!! !!!        
-    
     def applyButtonClicked(self):
         self._thread = RetentionOperation(self.__retentionParams(), self)
-        
-        # When the operation is finished, the signal 'operationFinished' calls the '__threadFinished method'
         self._thread.operationFinished.connect(self.__threadFinished)
         self._thread.start()
-    
-    # !!! !!! HERE THE OPERATION DATA IS COLLECTED AND STORED IN DATASTORE !!! !!!
+
     def __threadFinished(self):
         self._thread.wait()
         self._thread.setParent(None)
-        ((readfor, readevery, vread), data) = self._thread.retentionData()
+        ((readfor, readevery, hightime, lowtime, vread), data) = self._thread.retentionData()
         self._thread = None
 
         for (cell, values) in data.items():
@@ -296,12 +281,14 @@ class Retention(BaseModule):
     def __retentionParams(self):
         readfor = self.readForDurationWidget.getDuration()
         readevery = self.readEveryDurationWidget.getDuration()
+        hightime = self.hightimeDurationWidget.getDuration()
+        lowtime = self.lowtimeDurationWidget.getDuration()
         if self.lockReadoutVoltageCheckBox.isChecked():
             vread = self.readoutVoltage
         else:
             vread = self.readVoltageSpinBox.value()
 
-        return (readfor, readevery, vread)
+        return (readfor, readevery, hightime, lowtime, vread)
 
     @staticmethod
     def display(dataset):
