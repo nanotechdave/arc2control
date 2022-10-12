@@ -77,7 +77,7 @@ class RetentionOperation(BaseOperation):
             
             
             if not ispulse:
-                vread_cycle=0
+                vread_cycle=0.01
                 delta = time.time() - start
                 time.sleep(lowtime - delta)
                 
