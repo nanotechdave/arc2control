@@ -61,6 +61,7 @@ class RetentionOperation(BaseOperation):
         self.arc.connect_to_gnd(mask)
         start =time.time()
         currentSample= self.arc.read_slice_masked(13, mask, vread_start)
+        self.arc.finalise_operation(self.arcconf.idleMode)
         
         sampleTime = self.parseTimestamp(time.time())
         for idx, cell in enumerate(self.cells):
@@ -96,6 +97,7 @@ class RetentionOperation(BaseOperation):
                 #self.arc.add_delay((hightime - delta)*(10**9))
             start =time.time()
             currentSample = self.arc.read_slice_masked(13, mask, vread_cycle)
+            self.arc.finalise_operation(self.arcconf.idleMode)
             
             sampleTime = self.parseTimestamp(time.time())         
             
