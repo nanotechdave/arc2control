@@ -10,13 +10,14 @@ from .ret_display_widget import RETDataDisplayWidget
 from arc2control import signals
 from arc2control.h5utils import OpType
 from arc2control.widgets.duration_widget import DurationWidget
+from decimal import Decimal
 from PyQt6 import QtCore, QtWidgets, QtGui
 from PyQt6.QtCore import pyqtSignal
 
 
 _RET_DTYPE = [('read_voltage', '<f4'), ('current', '<f4'), ('tstamp_s', '<u8'), ('tstamp_us', '<u8')]
 
-_MAX_REFRESHES_PER_SECOND = 10
+_MAX_REFRESHES_PER_SECOND = 100
 _MIN_INTERVAL_USEC = 1000000//_MAX_REFRESHES_PER_SECOND # note! integer division
 
 
@@ -43,31 +44,60 @@ class RetentionOperation(BaseOperation):
         # that indicates how many iterations should be
         # pulled during each refresh
         self.cellDataLookBack = {}
+        
+            
 
     def run(self):
         (readfor, readevery, hightime, lowtime, vread) = self.params
         
+        
+        
+        
+        vread_start = 0.5
+        
+        
+        
         #computing number of iteration, sampletime averaged between high and low
         iterations = math.ceil(readfor/((hightime+lowtime)/2))
-        vread_start = 0
+        
         delta=0
         #try to set channels at a determined voltage
-        #self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, 1)], 0)
-        
+        self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, vread_start)], 0)
+        self.arc.execute()
         # allocate data tables and do initial read
-        mask = np.array([16, 17, 18], dtype= np.uint64)
+        
+        mask = np.array([])
         
         #making sure channel 16, 17, 18 are connected to gnd
-        self.arc.connect_to_gnd(mask)
-        start =time.time()
-        currentSample= self.arc.read_slice_masked(13, mask, vread_start)
-        self.arc.finalise_operation(self.arcconf.idleMode)
+        #self.arc.connect_to_gnd(mask)
         
+        #self.arc.execute()
+        
+        start =time.time()
         sampleTime = self.parseTimestamp(time.time())
-        for idx, cell in enumerate(self.cells):
+        
+        currentSample= self.arc.read_slice_open(mask, None)
+        #currentSample= currentSample[~np.isnan(currentSample)]
+        #currentSample[-1:]+currentSample[:-1]
+        
+        self.arc.finalise_operation(self.arcconf.idleMode)
+        correction = 0.005
+        vreadLow =0.5
+        
+        start =time.time()
+        for cell in self.cells:
+            (w, b) = (cell.w, cell.b)
+            (high, low) = self.mapper.wb2ch[w][b]
+            if not high in mask:
+                mask=np.append(mask, high)
+            #if not low in mask:
+            #    mask=np.append(mask, low)    
+            print(mask)
+            
+            
             self.cellData[cell] = np.empty(shape=(iterations+1, ), dtype=_RET_DTYPE)
             self.cellDataLookBack[cell] = 0
-            self.cellData[cell][0] = (vread_start, currentSample[idx], \
+            self.cellData[cell][0] = (vread_start, currentSample[high], \
                 *sampleTime)
             ispulse = False
             
@@ -78,8 +108,8 @@ class RetentionOperation(BaseOperation):
             
             
             if not ispulse:
-                vread_cycle=0.01
-                delta = time.time() - start
+                vread_cycle=vreadLow
+                delta = time.time() - start + correction
                 time.sleep(lowtime - delta)
                 
                 #   !!! --- !!!
@@ -87,25 +117,39 @@ class RetentionOperation(BaseOperation):
                 #I wanted to try delay attribute but 
                 #the "Instrument does not have this attribute"
                 
-                #self.arc.add_delay((lowtime - delta)*(10**9))
+                #self.arc.delay((lowtime - delta)*(10**9))
                 
             else:
                 vread_cycle = vread
-                delta = time.time() - start
+                delta = time.time() - start + 0.007
                 time.sleep(hightime - delta)
                
-                #self.arc.add_delay((hightime - delta)*(10**9))
+               
             start =time.time()
-            currentSample = self.arc.read_slice_masked(13, mask, vread_cycle)
+            sampleTime = self.parseTimestamp(time.time())    
+            self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, vread_cycle)], 0)
+            self.arc.execute()
+            self.arc.delay(100000)
+            currentSample = self.arc.read_slice_open(mask, None)
+            
+            #currentSample= currentSample[~np.isnan(currentSample)]
+            
+            #currentSample.insert(0,currentSample.pop(-1))
+           # currentSample.insert(0,currentSample.pop(-1))
+            
             self.arc.finalise_operation(self.arcconf.idleMode)
             
-            sampleTime = self.parseTimestamp(time.time())         
             
-            for idx, cell in enumerate(self.cells):
+                 
+            
+            for cell in self.cells:
                 
                 #stamp = self.parseTimestamp(start, step*delta)
-                self.cellData[cell][step] = (vread_cycle, currentSample[idx], *sampleTime)
-                self.conditionalRefresh(cell, step, (vread_cycle, currentSample[idx], *sampleTime))
+                (w, b) = (cell.w, cell.b)
+                (high, low) = self.mapper.wb2ch[w][b]
+                
+                self.cellData[cell][step] = (vread_cycle, currentSample[high], *sampleTime)
+                self.conditionalRefresh(cell, step, (vread_cycle, currentSample[high], *sampleTime))
             
             
         self.operationFinished.emit()
@@ -285,11 +329,14 @@ class Retention(BaseModule):
         self._thread.setParent(None)
         ((readfor, readevery, hightime, lowtime, vread), data) = self._thread.retentionData()
         self._thread = None
-
+        
         for (cell, values) in data.items():
             (w, b) = (cell.w, cell.b)
             dset = self.datastore.make_wb_table(w, b, MOD_TAG, \
                 values.shape, _RET_DTYPE)
+            k=list(dset.attrs.keys())
+            z=list(dset.attrs.values())
+            print(k,z)
             dset.attrs['vread'] = vread
             for (field, _) in _RET_DTYPE:
                 dset[:, field] = values[field]
@@ -308,5 +355,6 @@ class Retention(BaseModule):
         return (readfor, readevery, hightime, lowtime, vread)
 
     @staticmethod
+
     def display(dataset):
         return RETDataDisplayWidget(dataset)
