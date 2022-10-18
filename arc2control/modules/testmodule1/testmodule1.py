@@ -15,7 +15,7 @@ from PyQt6 import QtCore, QtWidgets, QtGui
 from PyQt6.QtCore import pyqtSignal
 
 
-_RET_DTYPE = [('read_voltage', '<f4'), ('current', '<f4'), ('tstamp_s', '<u8'), ('tstamp_us', '<u8')]
+_RET_DTYPE = [('channel','<u8'),('read_voltage', '<f4'), ('current', '<f4'), ('tstamp_s', '<u8'), ('tstamp_us', '<u8')]
 
 _MAX_REFRESHES_PER_SECOND = 100
 _MIN_INTERVAL_USEC = 1000000//_MAX_REFRESHES_PER_SECOND # note! integer division
@@ -32,6 +32,7 @@ class RetentionOperation(BaseOperation):
         self._voltages = []
         self._currents = []
         self.cellData = {}
+        
 
         (_, readevery, hightime, lowtime, _) = self.params
         # check if we need to ease up on refreshing the display
@@ -49,14 +50,10 @@ class RetentionOperation(BaseOperation):
 
     def run(self):
         (readfor, readevery, hightime, lowtime, vread) = self.params
-        
-        
-        
-        
+  
         vread_start = 0.5
         
-        
-        
+
         #computing number of iteration, sampletime averaged between high and low
         iterations = math.ceil(readfor/((hightime+lowtime)/2))
         
@@ -66,7 +63,7 @@ class RetentionOperation(BaseOperation):
         self.arc.execute()
         # allocate data tables and do initial read
         
-        mask = np.array([])
+        mask = np.array([16, 17])
         
         #making sure channel 16, 17, 18 are connected to gnd
         #self.arc.connect_to_gnd(mask)
@@ -83,21 +80,23 @@ class RetentionOperation(BaseOperation):
         self.arc.finalise_operation(self.arcconf.idleMode)
         correction = 0.005
         vreadLow =0.5
-        
+        print(self.cells)
         start =time.time()
         for cell in self.cells:
             (w, b) = (cell.w, cell.b)
             (high, low) = self.mapper.wb2ch[w][b]
             if not high in mask:
-                mask=np.append(mask, high)
-            #if not low in mask:
-            #    mask=np.append(mask, low)    
-            print(mask)
+                mask=np.append(mask, [high])
+            if not low in mask:
+                mask=np.append(mask, [low])    
+        print(mask)    
             
+     
             
-            self.cellData[cell] = np.empty(shape=(iterations+1, ), dtype=_RET_DTYPE)
-            self.cellDataLookBack[cell] = 0
-            self.cellData[cell][0] = (vread_start, currentSample[high], \
+        for idx, channel in enumerate(mask):   
+            self.cellData[idx] = np.empty(shape=(iterations+1, ), dtype=_RET_DTYPE)
+            self.cellDataLookBack[idx] = 0
+            self.cellData[idx][0] = (mask[idx], vread_start, currentSample[channel], \
                 *sampleTime)
             ispulse = False
             
@@ -142,14 +141,14 @@ class RetentionOperation(BaseOperation):
             
                  
             
-            for cell in self.cells:
+            for idx, channel in enumerate(mask):
                 
                 #stamp = self.parseTimestamp(start, step*delta)
-                (w, b) = (cell.w, cell.b)
-                (high, low) = self.mapper.wb2ch[w][b]
+                #(w, b) = (cell.w, cell.b)
+                #(high, low) = self.mapper.wb2ch[w][b]
                 
-                self.cellData[cell][step] = (vread_cycle, currentSample[high], *sampleTime)
-                self.conditionalRefresh(cell, step, (vread_cycle, currentSample[high], *sampleTime))
+                self.cellData[idx][step] = (mask[idx],vread_cycle, currentSample[channel], *sampleTime)
+                #self.conditionalRefresh(channel, step, (vread_cycle, currentSample[channel], *sampleTime))
             
             
         self.operationFinished.emit()
@@ -330,17 +329,16 @@ class Retention(BaseModule):
         ((readfor, readevery, hightime, lowtime, vread), data) = self._thread.retentionData()
         self._thread = None
         
-        for (cell, values) in data.items():
-            (w, b) = (cell.w, cell.b)
-            dset = self.datastore.make_wb_table(w, b, MOD_TAG, \
-                values.shape, _RET_DTYPE)
+        for (channel, values) in data.items():
+            #(w, b) = (cell.w, cell.b)
+            dset = self.dataset.make_table(MOD_TAG, values.shape, _RET_DTYPE, None)
             k=list(dset.attrs.keys())
             z=list(dset.attrs.values())
             print(k,z)
             dset.attrs['vread'] = vread
             for (field, _) in _RET_DTYPE:
                 dset[:, field] = values[field]
-            self.experimentFinished.emit(w, b, dset.name)
+            self.experimentFinished.emit(channel, dset.name)
 
     def __retentionParams(self):
         readfor = self.readForDurationWidget.getDuration()
