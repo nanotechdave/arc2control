@@ -2,6 +2,7 @@ import math
 import time
 import numpy as np
 import pyqtgraph as pg
+import h5py
 from enum import Enum
 from pyarc2 import ReadAt, ReadAfter, DataMode
 from arc2control.modules.base import BaseModule, BaseOperation
@@ -15,18 +16,23 @@ from PyQt6 import QtCore, QtWidgets, QtGui
 from PyQt6.QtCore import pyqtSignal
 
 
-_RET_DTYPE = [('channel','<u8'),('read_voltage', '<f4'), ('current', '<f4'), ('tstamp_s', '<u8'), ('tstamp_us', '<u8')]
+_RET_DTYPE = [('channel','<u8'),('bias', '<f8'), ('current', '<f4'), ('tstamp_s', '<u8'), ('tstamp_us', '<u8')]
 
 _MAX_REFRESHES_PER_SECOND = 100
 _MIN_INTERVAL_USEC = 1000000//_MAX_REFRESHES_PER_SECOND # note! integer division
 
 
 class RetentionOperation(BaseOperation):
+    
+    #Define useful signals
     newValue = pyqtSignal(np.ndarray)
     operationFinished = QtCore.pyqtSignal()
 
+    #Constructor
     def __init__(self, params, parent):
         super().__init__(parent=parent)
+        
+        #params are passed via GUI, like pulsewidth and vread
         self.params = params
         self.arcconf = self.arc2Config
         self._voltages = []
@@ -50,107 +56,125 @@ class RetentionOperation(BaseOperation):
 
     def run(self):
         (readfor, readevery, hightime, lowtime, vread) = self.params
-  
-        vread_start = 0.5
+        
         
 
         #computing number of iteration, sampletime averaged between high and low
         iterations = math.ceil(readfor/((hightime+lowtime)/2))
         
         delta=0
-        #try to set channels at a determined voltage
-        self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, vread_start)], 0)
-        self.arc.execute()
-        # allocate data tables and do initial read
         
-        mask = np.array([16, 17])
+        """
+        mask: list of channels selected on GUI crosspoints (not repeated)
+        biasMask: list of channels to be biased
+        biasedMask: list of tuplets [(channel, bias)]
+        """
+        mask = []
+        biasMask=[13, 14]
+        biasedMask=[]
         
-        #making sure channel 16, 17, 18 are connected to gnd
-        #self.arc.connect_to_gnd(mask)
+        #Set value to start with
+        v_start = 0
         
-        #self.arc.execute()
+        vBiasLow = 0.1
+        vBiasHigh = 1
         
-        start =time.time()
-        sampleTime = self.parseTimestamp(time.time())
         
-        currentSample= self.arc.read_slice_open(mask, None)
-        #currentSample= currentSample[~np.isnan(currentSample)]
-        #currentSample[-1:]+currentSample[:-1]
-        
-        self.arc.finalise_operation(self.arcconf.idleMode)
-        correction = 0.005
-        vreadLow =0.5
-        print(self.cells)
-        start =time.time()
+        #construction of mask
         for cell in self.cells:
             (w, b) = (cell.w, cell.b)
             (high, low) = self.mapper.wb2ch[w][b]
-            if not high in mask:
-                mask=np.append(mask, [high])
-            if not low in mask:
-                mask=np.append(mask, [low])    
-        print(mask)    
             
-     
+            if high not in mask:
+                mask.append(high)
+               
+            if low not in mask:
+                mask.append(low)   
+                
+        #construction of biased mask
+        for channel in mask:
+            if channel in biasMask:
+                biasedMask.append((channel,v_start))
+            else:
+                biasedMask.append((channel, 0))
+        
+        
+        
+        #set channels to a determined voltage
+        self.arc.config_channels(biasedMask, 0)
+        self.arc.execute()
+        
+        #start the timer, in order to compensate and keep track of operation time
+        start =time.time()
+        sampleTime = self.parseTimestamp(time.time())
+        
+        #perform open current measurement on mask channels
+        currentSample= self.arc.read_slice_open(mask, None)
+       
+        #get back to idle mode after reading
+        self.arc.finalise_operation(self.arcconf.idleMode)
+        
             
+        
+        #save reading results in cellData[idx]
         for idx, channel in enumerate(mask):   
             self.cellData[idx] = np.empty(shape=(iterations+1, ), dtype=_RET_DTYPE)
             self.cellDataLookBack[idx] = 0
-            self.cellData[idx][0] = (mask[idx], vread_start, currentSample[channel], \
+            self.cellData[idx][0] = (mask[idx], v_start, currentSample[channel], \
                 *sampleTime)
             ispulse = False
             
             
-
+        #cycle between high and low bias
         for step in range(1, iterations+1):
+            #alternate between high and low bias
             ispulse=not ispulse
-            
-            
-            if not ispulse:
-                vread_cycle=vreadLow
-                delta = time.time() - start + correction
-                time.sleep(lowtime - delta)
-                
-                #   !!! --- !!!
-                #I think sleep is too slow, 
-                #I wanted to try delay attribute but 
-                #the "Instrument does not have this attribute"
-                
-                #self.arc.delay((lowtime - delta)*(10**9))
+                       
+            if not ispulse:                
+                #update of biased mask
+                biasedMask=[]
+                for channel in mask:
+                    if channel in biasMask:
+                        biasedMask.append((channel,vBiasLow))
+                    else:
+                        biasedMask.append((channel, vBiasLow))
+                #compute how much time the previous cycle has taken and correct delay
+                delta = time.time() - start
+                time.sleep(lowtime-delta)
+                #self.arc.delay(int((lowtime - delta)*(10**9)))
                 
             else:
-                vread_cycle = vread
-                delta = time.time() - start + 0.007
+                #update of biased mask
+                biasedMask=[]
+                for channel in mask:
+                    if channel in biasMask:
+                        biasedMask.append((channel,vBiasHigh))
+                    else:
+                        biasedMask.append((channel, vBiasLow))
+                delta = time.time() - start
                 time.sleep(hightime - delta)
+                #self.arc.delay(int((hightime - delta)*(10**9)))
                
-               
+            #start timer for next cycle  
             start =time.time()
-            sampleTime = self.parseTimestamp(time.time())    
-            self.arc.config_channels([(16, 0), (17, 0), (18, 0), (13, vread_cycle)], 0)
+            sampleTime = self.parseTimestamp(time.time())   
+            
+            #set channels
+            self.arc.config_channels(biasedMask, 0)
             self.arc.execute()
-            self.arc.delay(100000)
+            self.arc.delay(1000)
+            
+            #read currents from masked channels
             currentSample = self.arc.read_slice_open(mask, None)
             
-            #currentSample= currentSample[~np.isnan(currentSample)]
-            
-            #currentSample.insert(0,currentSample.pop(-1))
-           # currentSample.insert(0,currentSample.pop(-1))
-            
-            self.arc.finalise_operation(self.arcconf.idleMode)
-            
-            
-                 
+            #set back to idle
+            self.arc.finalise_operation(self.arcconf.idleMode)         
             
             for idx, channel in enumerate(mask):
-                
-                #stamp = self.parseTimestamp(start, step*delta)
-                #(w, b) = (cell.w, cell.b)
-                #(high, low) = self.mapper.wb2ch[w][b]
-                
-                self.cellData[idx][step] = (mask[idx],vread_cycle, currentSample[channel], *sampleTime)
+                print(biasedMask)
+                self.cellData[idx][step] = (mask[idx],biasedMask[idx][1], currentSample[channel], *sampleTime)
                 #self.conditionalRefresh(channel, step, (vread_cycle, currentSample[channel], *sampleTime))
-            
-            
+                        
         self.operationFinished.emit()
 
     def parseTimestamp(self, tstamp, offset=0):
@@ -212,6 +236,9 @@ class Retention(BaseModule):
         self._thread = None
 
         self.setupUi()
+        self.customDatastore = h5py.File('C:/Users/mcfab/Desktop/customdata.h5','w')
+        self.customGroup =self.customDatastore.create_group('group1')
+        
 
         signals.crossbarSelectionChanged.connect(self.crossbarSelectionChanged)
 
@@ -331,14 +358,26 @@ class Retention(BaseModule):
         
         for (channel, values) in data.items():
             #(w, b) = (cell.w, cell.b)
-            dset = self.dataset.make_table(MOD_TAG, values.shape, _RET_DTYPE, None)
-            k=list(dset.attrs.keys())
-            z=list(dset.attrs.values())
+            directory="C:/Users/mcfab/Desktop/Measurements/"
+            filename=str(values[0][0])
+            with open(r""+directory+filename+".txt","w") as file:
+                file.write(np.array2string(values))
+            file.close()
+                
+                
+            print(channel)
+            print(values)
+            """
+            customDset=self.customGroup.create_dataset(name='TestModule1_'+str(channel), shape= np.shape(values), dtype= _RET_DTYPE, chunks=True)
+            k=list(customDset.attrs.keys())
+            z=list(customDset.attrs.values())
             print(k,z)
-            dset.attrs['vread'] = vread
-            for (field, _) in _RET_DTYPE:
-                dset[:, field] = values[field]
-            self.experimentFinished.emit(channel, dset.name)
+            customDset.attrs['vread'] = vread
+            self.display(customDset)
+           
+            self.experimentFinished.emit(channel, channel, customDset.name)
+            """
+        self.customDatastore.close()
 
     def __retentionParams(self):
         readfor = self.readForDurationWidget.getDuration()
