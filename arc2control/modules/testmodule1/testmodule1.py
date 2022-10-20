@@ -170,6 +170,7 @@ class RetentionOperation(BaseOperation):
             #set back to idle
             self.arc.finalise_operation(self.arcconf.idleMode)         
             
+            #Save in cellData {(channel),(channelBias),(currentSample),(time),(timeprecise)}
             for idx, channel in enumerate(mask):
                 print(biasedMask)
                 self.cellData[idx][step] = (mask[idx],biasedMask[idx][1], currentSample[channel], *sampleTime)
@@ -236,6 +237,8 @@ class Retention(BaseModule):
         self._thread = None
 
         self.setupUi()
+        
+        #tentative custom dataset, not working
         self.customDatastore = h5py.File('C:/Users/mcfab/Desktop/customdata.h5','w')
         self.customGroup =self.customDatastore.create_group('group1')
         
@@ -251,12 +254,14 @@ class Retention(BaseModule):
             ('ms', 1e-3), ('s', 1.0), ('min', 60.0)])
         self.readEveryDurationWidget.setDuration(100, 'ms')
         
+        #Create widget to set high voltage duration
         self.hightimeDurationWidget = DurationWidget()
         self.hightimeDurationWidget.setObjectName('hightimeDurationWidget')
         self.hightimeDurationWidget.setDurations([\
               ('us', 1e-6), ('ms', 1e-3), ('s', 1.0), ('min', 60.0)])
         self.hightimeDurationWidget.setDuration(100, 'ms')
         
+        #Create widget to set low voltage duration
         self.lowtimeDurationWidget = DurationWidget()
         self.lowtimeDurationWidget.setObjectName('lowtimeDurationWidget')
         self.lowtimeDurationWidget.setDurations([\
@@ -289,7 +294,7 @@ class Retention(BaseModule):
         layout.addWidget(QtWidgets.QLabel("Read for"), 1, 0)
         layout.addWidget(QtWidgets.QLabel("Read at"), 2, 0)
         
-        #start of mycode
+        #Set hightime and lowtime
         layout.addWidget(QtWidgets.QLabel("hightime"), 3, 0)
         layout.addWidget(QtWidgets.QLabel("lowtime"), 4, 0)        
         
@@ -297,7 +302,7 @@ class Retention(BaseModule):
         layout.addWidget(self.readForDurationWidget, 1, 1)
         layout.addWidget(self.readVoltageSpinBox, 2, 1)
         
-        #start of my code
+        #Add hightime and lowtime boxes in the GUI
         layout.addWidget(self.hightimeDurationWidget, 3, 1)
         layout.addWidget(self.lowtimeDurationWidget, 4, 1)
         
@@ -351,23 +356,34 @@ class Retention(BaseModule):
         self._thread.start()
 
     def __threadFinished(self):
+        #wait for the buffer to execute instructions
         self._thread.wait()
         self._thread.setParent(None)
+        
+        #Import data from thread
         ((readfor, readevery, hightime, lowtime, vread), data) = self._thread.retentionData()
         self._thread = None
         
         for (channel, values) in data.items():
+            #removed wordline and bitline features
             #(w, b) = (cell.w, cell.b)
+            
+            #Set directory to save files to
             directory="C:/Users/mcfab/Desktop/Measurements/"
+            
+            #Set filename equal to channel number
             filename=str(values[0][0])
+            
+            #Write values on a file
             with open(r""+directory+filename+".txt","w") as file:
                 file.write(np.array2string(values))
             file.close()
                 
-                
+            #Debug test print to terminal    
             print(channel)
             print(values)
             """
+            #SECTION THAT STORES VALUES IN THE DATASET, DOES NOT WORK ATM
             customDset=self.customGroup.create_dataset(name='TestModule1_'+str(channel), shape= np.shape(values), dtype= _RET_DTYPE, chunks=True)
             k=list(customDset.attrs.keys())
             z=list(customDset.attrs.values())
@@ -375,6 +391,7 @@ class Retention(BaseModule):
             customDset.attrs['vread'] = vread
             self.display(customDset)
            
+            #SIGNAL EXPERIMENTFINISHED ABORTED SINCE IT REQUIRED WORDLINE AND BITLINE
             self.experimentFinished.emit(channel, channel, customDset.name)
             """
         self.customDatastore.close()
