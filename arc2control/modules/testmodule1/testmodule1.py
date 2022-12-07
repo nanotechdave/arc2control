@@ -75,27 +75,6 @@ class RetentionOperation(BaseOperation):
         biasedMask=[]
         
         
-        low_channel = 16
-        high_channel = 13
-        pulseV = 5.0
-        channel_list = [(low_channel, -pulseV/2.0, 0.0), (high_channel, pulseV/2.0, 0.0)]
-        cluster_timings = [None]*8
-        cluster_timings[low_channel // 8] = int(200)
-        cluster_timings[high_channel // 8] = int(200)
-        
-        for _ in range(10):
-            self.arc.pulse_slice_fast_open(channel_list, cluster_timings, True)
-            # add the pulse delay, add more to add delay between
-            # pulses
-            self.arc.delay(200) # or arc.delay(200+interpulse)
-        
-        # read instructions will trigger the execution of the input buffer
-        resistance = self.arc.read_one(low_channel, high_channel, 0.5)
-        print("current is")
-        print(resistance)
-        print("resistance is")
-        res=pulseV/resistance
-        print(res)
         
         #Set value to start with
         v_start = -5
@@ -117,22 +96,26 @@ class RetentionOperation(BaseOperation):
                 mask.append(low)   
         mask.sort()
         highs.sort()
+        
+        
         #construction of biased mask
         for channel in mask:
             if channel in biasMask:
                 biasedMask.append((channel,v_start))
             else:
-                biasedMask.append((channel, -0.5))
+                biasedMask.append((channel, 0))
                 
         
         
-        #set channels to a determined voltage
+        #set channels to the desired voltage
         self.arc.connect_to_gnd([])
         self.arc.open_channels(list(range(64)))
         self.arc.execute()
+        
         self.arc.config_channels(biasedMask, base=None)
         self.arc.execute()
         self.arc.wait()
+        
         voltages=self.arc.vread_channels(mask, False)
         print("these are the voltages")
         print(voltages)
@@ -143,18 +126,17 @@ class RetentionOperation(BaseOperation):
         start_prog =time.time()
         sampleTime = time.time()
         resistance=[0,0,0,0,0,0,0,0,0,0,0,0]
+        
+        
         #perform open current measurement on mask channels
         currentSample= self.arc.read_slice_open(list(range(64)), True)
         for idx, channel in enumerate(mask):
             resistance[idx]=(voltages[0]-voltages[idx])/currentSample[channel]
         
         
-        #get back to idle mode after reading
+        
         print(resistance)
         
-        #self.arc.finalise_operation(self.arcconf.idleMode)
-        
-            
         
         #save reading results in cellData[idx]
         for idx, channel in enumerate(mask):   
@@ -163,7 +145,8 @@ class RetentionOperation(BaseOperation):
             self.cellData[idx][0] = (mask[idx], voltages[idx], currentSample[channel], resistance[idx], sampleTime-start_prog)
             ispulse = False
             
-            
+        #------------   HERE STARTS THE ACTUAL CYCLE    ----------------------------------
+        
         #cycle between high and low bias
         for step in range(1, iterations+1):
             #alternate between high and low bias
@@ -177,10 +160,9 @@ class RetentionOperation(BaseOperation):
                         biasedMask.append((channel,vBiasLow))
                     else:
                         biasedMask.append((channel, -0.0))
-                #compute how much time the previous cycle has taken and correct delay
-                delta = time.time() - start
+                
                 time.sleep(lowtime)
-                #self.arc.delay(int((lowtime - delta)*(10**9)))
+               
                 
             else:
                 #update of biased mask
@@ -190,9 +172,8 @@ class RetentionOperation(BaseOperation):
                         biasedMask.append((channel,vBiasHigh))
                     else:
                         biasedMask.append((channel, 0.0))
-                delta = time.time() - start
+                
                 time.sleep(hightime)
-                #self.arc.delay(int((hightime - delta)*(10**9)))
                
             #start timer for next cycle  
             start =time.time()
@@ -201,38 +182,43 @@ class RetentionOperation(BaseOperation):
             #set channels
            
             self.arc.connect_to_gnd([])
-            self.arc.execute()
             self.arc.open_channels(list(range(64)))
             self.arc.execute()
+            
+            #DEBUG CHECK
             print(biasedMask)
+                
             self.arc.config_channels(biasedMask, base=None)
             self.arc.execute()
-            time.sleep(5)
-            self.arc.wait()
             
             voltages=[]
             voltages=self.arc.vread_channels(mask, False)
             
-            currentSample = self.arc.read_slice_open(list(range(64)), False)
             print("these are the voltages")
             print(voltages)
             
+             
+            #INSERTING SLEEP TO CHECK THE WAVEFORM ON OSCILLOSCOPE, unselected channels are still floating
+            time.sleep(5)
+            
+            currentSample = self.arc.read_slice_open(list(range(64)), False)
+            
+            #INSERTING SLEEP TO CHECK THE WAVEFORM ON OSCILLOSCOPE, unselected channels are now forced at 0V
+            time.sleep(3)
             
             
-            #read currents from masked channels
+          
             
             for idx, channel in enumerate(mask):
                 resistance[idx]=(2*voltages[0]-2*voltages[idx])/currentSample[channel]
-            #print(currentSample)
+           
             print(resistance)
-            
-            #set back to idle
-            #self.arc.finalise_operation(self.arcconf.idleMode)         
+                 
             
             for idx, channel in enumerate(mask):
                 
                 self.cellData[idx][step] = (mask[idx],voltages[idx], currentSample[channel],resistance[idx], sampleTime-start_prog)
-                #self.conditionalRefresh(channel, step, (vread_cycle, currentSample[channel], *sampleTime))
+                
                         
         self.operationFinished.emit()
 
