@@ -203,7 +203,7 @@ class RetentionOperation(BaseOperation):
             
             currentSample = self.arc.read_slice_open(mask, False)
             
-            #INSERTING SLEEP TO CHECK THE WAVEFORM ON OSCILLOSCOPE, unselected channels are now forced at 0V
+            #INSERTING SLEEP TO CHECK THE WAVEFORM ON OSCILLOSCOPE, unselected channels are still floating
             time.sleep(3)
             
             
