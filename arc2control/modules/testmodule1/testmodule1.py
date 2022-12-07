@@ -129,7 +129,7 @@ class RetentionOperation(BaseOperation):
         
         
         #perform open current measurement on mask channels
-        currentSample= self.arc.read_slice_open(list(range(64)), True)
+        currentSample= self.arc.read_slice_open(list(range(64)), False)
         for idx, channel in enumerate(mask):
             resistance[idx]=(voltages[0]-voltages[idx])/currentSample[channel]
         
