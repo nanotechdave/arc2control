@@ -129,7 +129,7 @@ class RetentionOperation(BaseOperation):
         
         
         #perform open current measurement on mask channels
-        currentSample= self.arc.read_slice_open(list(range(64)), False)
+        currentSample= self.arc.read_slice_open(mask, False)
         for idx, channel in enumerate(mask):
             resistance[idx]=(voltages[0]-voltages[idx])/currentSample[channel]
         
@@ -201,7 +201,7 @@ class RetentionOperation(BaseOperation):
             #INSERTING SLEEP TO CHECK THE WAVEFORM ON OSCILLOSCOPE, unselected channels are still floating
             time.sleep(5)
             
-            currentSample = self.arc.read_slice_open(list(range(64)), False)
+            currentSample = self.arc.read_slice_open(mask, False)
             
             #INSERTING SLEEP TO CHECK THE WAVEFORM ON OSCILLOSCOPE, unselected channels are now forced at 0V
             time.sleep(3)
